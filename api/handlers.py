@@ -27,38 +27,44 @@ if TAVILY_AVAILABLE:
         log.warning("TAVILY_API_KEY not found. Search functionality disabled.")
 
 
-def search_web(query: str) -> str:
+def search_web(query: str) -> tuple[str, list]:
     """Search the web using Tavily.
     
     Args:
         query: Search query
         
     Returns:
-        Search results as formatted string
+        Tuple of (formatted search results, list of source dicts)
     """
     if not _tavily_client:
-        return "Search not available. Tavily API key not configured."
+        return "Search not available. Tavily API key not configured.", []
     
     try:
         log.info("Searching web", query=query)
         results = _tavily_client.search(query, max_results=5)
         
         if not results or 'results' not in results:
-            return "No results found."
+            return "No results found.", []
         
-        # Format results
+        # Format results and collect sources
         formatted = []
+        sources = []
         for i, result in enumerate(results['results'], 1):
             formatted.append(
                 f"{i}. {result.get('title', 'Untitled')}\n"
                 f"   URL: {result.get('url', 'N/A')}\n"
                 f"   {result.get('content', 'No content')}"
             )
+            sources.append({
+                "title": result.get('title', 'Untitled'),
+                "url": result.get('url', 'N/A'),
+                "content": result.get('content', 'No content')[:200] + "..." if len(result.get('content', '')) > 200 else result.get('content', 'No content')
+            })
         
-        return "\n\n".join(formatted)
+        return "\n\n".join(formatted), sources
     except Exception as e:
         log.error("Search error", error=str(e))
-        return f"Search error: {str(e)}"
+        return f"Search error: {str(e)}", []
 
 
 def get_model(model_name: str, temperature: float = 0.3) -> Union[OllamaLLM, ChatOpenAI]:
@@ -96,7 +102,7 @@ def get_model(model_name: str, temperature: float = 0.3) -> Union[OllamaLLM, Cha
     return _models[key]
 
 
-def generate_code(prompt: str, model: str, temperature: float, use_search: bool = False) -> str:
+def generate_code(prompt: str, model: str, temperature: float, use_search: bool = False) -> tuple[str, list]:
     """
     Generate code or explanations based on a prompt.
     
@@ -107,14 +113,15 @@ def generate_code(prompt: str, model: str, temperature: float, use_search: bool 
         use_search: Whether to search the web for context
     
     Returns:
-        Generated response
+        Tuple of (generated response, list of sources)
     """
     log.info("Generating code", model=model, prompt_length=len(prompt), search_enabled=use_search)
     
     # Optionally search for context
     context = ""
+    sources = []
     if use_search and _tavily_client:
-        search_results = search_web(prompt)
+        search_results, sources = search_web(prompt)
         context = f"\n\nWeb search results:\n{search_results}\n\n"
         log.info("Added search context", context_length=len(context))
     
@@ -127,7 +134,7 @@ def generate_code(prompt: str, model: str, temperature: float, use_search: bool 
     if hasattr(response, 'content'):
         response = response.content
     log.info("Code generated", response_length=len(response))
-    return response
+    return response, sources
 
 
 def complete_code(prompt: str, model: str, temperature: float) -> str:
@@ -152,7 +159,7 @@ def complete_code(prompt: str, model: str, temperature: float) -> str:
     return response
 
 
-def chat(prompt: str, model: str, temperature: float, use_search: bool = False) -> str:
+def chat(prompt: str, model: str, temperature: float, use_search: bool = False) -> tuple[str, list]:
     """
     Handle chat-style coding questions and explanations.
     
@@ -163,14 +170,15 @@ def chat(prompt: str, model: str, temperature: float, use_search: bool = False) 
         use_search: Whether to search the web for context
     
     Returns:
-        Response to the question
+        Tuple of (response, list of sources)
     """
     log.info("Processing chat request", model=model, prompt_length=len(prompt), search_enabled=use_search)
     
     # Optionally search for context
     context = ""
+    sources = []
     if use_search and _tavily_client:
-        search_results = search_web(prompt)
+        search_results, sources = search_web(prompt)
         context = f"\n\nWeb search results:\n{search_results}\n\n"
         log.info("Added search context", context_length=len(context))
     
@@ -183,7 +191,7 @@ def chat(prompt: str, model: str, temperature: float, use_search: bool = False) 
     if hasattr(response, 'content'):
         response = response.content
     log.info("Chat response generated", response_length=len(response))
-    return response
+    return response, sources
 
 
 def get_available_models() -> list:
