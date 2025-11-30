@@ -2,6 +2,8 @@
 Contains the actual implementation of code generation, completion, and chat functionality."""
 from langchain_ollama import OllamaLLM
 from langchain_openai import ChatOpenAI
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, ToolMessage
 from typing import Dict, Union
 from logger import log
 import os
@@ -27,44 +29,42 @@ if TAVILY_AVAILABLE:
         log.warning("TAVILY_API_KEY not found. Search functionality disabled.")
 
 
-def search_web(query: str) -> tuple[str, list]:
-    """Search the web using Tavily.
+@tool
+def search_web(query: str) -> str:
+    """Search the web for current information using Tavily.
+    Use this when you need up-to-date information, documentation, or to verify facts.
     
     Args:
-        query: Search query
+        query: The search query to look up
         
     Returns:
-        Tuple of (formatted search results, list of source dicts)
+        Search results with titles, URLs and content snippets
     """
     if not _tavily_client:
-        return "Search not available. Tavily API key not configured.", []
+        return "Search not available. Tavily API key not configured."
     
     try:
-        log.info("Searching web", query=query)
+        log.info("Tool call: search_web", query=query)
         results = _tavily_client.search(query, max_results=5)
         
         if not results or 'results' not in results:
-            return "No results found.", []
+            return "No results found."
         
-        # Format results and collect sources
+        # Format results
         formatted = []
-        sources = []
         for i, result in enumerate(results['results'], 1):
             formatted.append(
                 f"{i}. {result.get('title', 'Untitled')}\n"
                 f"   URL: {result.get('url', 'N/A')}\n"
                 f"   {result.get('content', 'No content')}"
             )
-            sources.append({
-                "title": result.get('title', 'Untitled'),
-                "url": result.get('url', 'N/A'),
-                "content": result.get('content', 'No content')[:200] + "..." if len(result.get('content', '')) > 200 else result.get('content', 'No content')
-            })
         
-        return "\n\n".join(formatted), sources
+        output = "\n\n".join(formatted)
+        log.info("Search completed", results_count=len(results['results']))
+        return output
     except Exception as e:
         log.error("Search error", error=str(e))
-        return f"Search error: {str(e)}", []
+        return f"Search error: {str(e)}"
 
 
 def get_model(model_name: str, temperature: float = 0.3) -> Union[OllamaLLM, ChatOpenAI]:
@@ -110,31 +110,54 @@ def generate_code(prompt: str, model: str, temperature: float, use_search: bool 
         prompt: The user's request
         model: Model name to use
         temperature: Generation temperature
-        use_search: Whether to search the web for context
+        use_search: Whether to enable web search tool for the AI
     
     Returns:
-        Tuple of (generated response, list of sources)
+        Tuple of (generated response, list of tool calls made)
     """
     log.info("Generating code", model=model, prompt_length=len(prompt), search_enabled=use_search)
     
-    # Optionally search for context
-    context = ""
-    sources = []
-    if use_search and _tavily_client:
-        search_results, sources = search_web(prompt)
-        context = f"\n\nWeb search results:\n{search_results}\n\n"
-        log.info("Added search context", context_length=len(context))
-    
-    # Add context to prompt if available
-    full_prompt = f"{context}{prompt}" if context else prompt
-    
     llm = get_model(model, temperature)
-    response = llm.invoke(full_prompt)
-    # Extract content from AIMessage if it's an OpenAI model
-    if hasattr(response, 'content'):
-        response = response.content
-    log.info("Code generated", response_length=len(response))
-    return response, sources
+    tool_calls = []
+    
+    # If search is enabled and it's an OpenAI model (supports tool calling)
+    if use_search and model.startswith(('gpt-', 'o1-', 'o3-')) and _tavily_client:
+        # Bind the search tool to the model
+        llm_with_tools = llm.bind_tools([search_web])
+        
+        # First call - let AI decide if it needs to search
+        response = llm_with_tools.invoke([HumanMessage(content=prompt)])
+        
+        # Check if AI wants to use tools
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            messages = [HumanMessage(content=prompt), response]
+            
+            # Execute each tool call
+            for tool_call in response.tool_calls:
+                tool_calls.append({
+                    "tool": tool_call['name'],
+                    "args": tool_call['args']
+                })
+                
+                # Execute the tool
+                tool_output = search_web.invoke(tool_call['args'])
+                messages.append(ToolMessage(
+                    content=tool_output,
+                    tool_call_id=tool_call['id']
+                ))
+            
+            # Get final response with tool results
+            final_response = llm_with_tools.invoke(messages)
+            response_text = final_response.content
+        else:
+            response_text = response.content
+    else:
+        # No tool calling support or not enabled
+        response = llm.invoke(prompt)
+        response_text = response.content if hasattr(response, 'content') else response
+    
+    log.info("Code generated", response_length=len(response_text), tools_used=len(tool_calls))
+    return response_text, tool_calls
 
 
 def complete_code(prompt: str, model: str, temperature: float) -> str:
@@ -167,31 +190,54 @@ def chat(prompt: str, model: str, temperature: float, use_search: bool = False) 
         prompt: User's question or request
         model: Model name to use
         temperature: Generation temperature
-        use_search: Whether to search the web for context
+        use_search: Whether to enable web search tool for the AI
     
     Returns:
-        Tuple of (response, list of sources)
+        Tuple of (response, list of tool calls made)
     """
     log.info("Processing chat request", model=model, prompt_length=len(prompt), search_enabled=use_search)
     
-    # Optionally search for context
-    context = ""
-    sources = []
-    if use_search and _tavily_client:
-        search_results, sources = search_web(prompt)
-        context = f"\n\nWeb search results:\n{search_results}\n\n"
-        log.info("Added search context", context_length=len(context))
-    
-    # Add context to prompt if available
-    full_prompt = f"{context}{prompt}" if context else prompt
-    
     llm = get_model(model, temperature)
-    response = llm.invoke(full_prompt)
-    # Extract content from AIMessage if it's an OpenAI model
-    if hasattr(response, 'content'):
-        response = response.content
-    log.info("Chat response generated", response_length=len(response))
-    return response, sources
+    tool_calls = []
+    
+    # If search is enabled and it's an OpenAI model (supports tool calling)
+    if use_search and model.startswith(('gpt-', 'o1-', 'o3-')) and _tavily_client:
+        # Bind the search tool to the model
+        llm_with_tools = llm.bind_tools([search_web])
+        
+        # First call - let AI decide if it needs to search
+        response = llm_with_tools.invoke([HumanMessage(content=prompt)])
+        
+        # Check if AI wants to use tools
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            messages = [HumanMessage(content=prompt), response]
+            
+            # Execute each tool call
+            for tool_call in response.tool_calls:
+                tool_calls.append({
+                    "tool": tool_call['name'],
+                    "args": tool_call['args']
+                })
+                
+                # Execute the tool
+                tool_output = search_web.invoke(tool_call['args'])
+                messages.append(ToolMessage(
+                    content=tool_output,
+                    tool_call_id=tool_call['id']
+                ))
+            
+            # Get final response with tool results
+            final_response = llm_with_tools.invoke(messages)
+            response_text = final_response.content
+        else:
+            response_text = response.content
+    else:
+        # No tool calling support or not enabled
+        response = llm.invoke(prompt)
+        response_text = response.content if hasattr(response, 'content') else response
+    
+    log.info("Chat response generated", response_length=len(response_text), tools_used=len(tool_calls))
+    return response_text, tool_calls
 
 
 def get_available_models() -> list:

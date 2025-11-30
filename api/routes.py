@@ -27,7 +27,7 @@ class CodeRequest(BaseModel):
 class CodeResponse(BaseModel):
     response: str
     model: str
-    sources: Optional[list] = None
+    tool_calls: Optional[list] = None
 
 
 @app.get("/")
@@ -84,7 +84,7 @@ async def generate_code(request: CodeRequest):
     """
     try:
         log.info("POST /generate", model=request.model, search=request.use_search)
-        response, sources = handlers.generate_code(
+        response, tool_calls = handlers.generate_code(
             request.prompt,
             request.model,
             request.temperature,
@@ -94,7 +94,7 @@ async def generate_code(request: CodeRequest):
         return CodeResponse(
             response=response,
             model=request.model,
-            sources=sources if sources else None
+            tool_calls=tool_calls if tool_calls else None
         )
     except Exception as e:
         log.error("Error generating code", error=str(e))
@@ -153,7 +153,7 @@ async def chat(request: CodeRequest):
     """
     try:
         log.info("POST /chat", model=request.model, search=request.use_search)
-        response, sources = handlers.chat(
+        response, tool_calls = handlers.chat(
             request.prompt,
             request.model,
             request.temperature,
@@ -163,7 +163,7 @@ async def chat(request: CodeRequest):
         return CodeResponse(
             response=response,
             model=request.model,
-            sources=sources if sources else None
+            tool_calls=tool_calls if tool_calls else None
         )
     except Exception as e:
         log.error("Error in chat", error=str(e))
