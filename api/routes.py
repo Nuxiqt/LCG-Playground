@@ -4,7 +4,7 @@ Defines all HTTP endpoints and delegates business logic to handlers.
 """
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Any
 from . import handlers
 from logger import log
 
@@ -26,6 +26,20 @@ class CodeRequest(BaseModel):
 
 class CodeResponse(BaseModel):
     response: str
+    model: str
+    tool_calls: Optional[list] = None
+
+
+class StructuredRequest(BaseModel):
+    prompt: str
+    schema: dict  # Pydantic schema as dict
+    model: Optional[str] = "gpt-4o"
+    temperature: Optional[float] = 0.3
+    use_search: Optional[bool] = False
+
+
+class StructuredResponse(BaseModel):
+    data: Any  # Parsed structured data
     model: str
     tool_calls: Optional[list] = None
 
@@ -61,6 +75,60 @@ async def health_check():
 async def list_models():
     """List available models."""
     return {"models": handlers.get_available_models()}
+
+
+@app.post("/structured", response_model=StructuredResponse)
+async def structured_output(request: StructuredRequest):
+    """
+    Get structured output based on a Pydantic schema.
+    
+    Only works with OpenAI models (gpt-4o, gpt-4-turbo, etc.)
+    
+    Example:
+    ```json
+    {
+        "prompt": "List the top 3 Python frameworks",
+        "schema": {
+            "title": "Frameworks",
+            "type": "object",
+            "properties": {
+                "frameworks": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "description": {"type": "string"},
+                            "popularity": {"type": "string"}
+                        },
+                        "required": ["name", "description"]
+                    }
+                }
+            },
+            "required": ["frameworks"]
+        },
+        "model": "gpt-4o"
+    }
+    ```
+    """
+    try:
+        log.info("POST /structured", model=request.model, search=request.use_search)
+        data, tool_calls = handlers.structured_output(
+            request.prompt,
+            request.schema,
+            request.model,
+            request.temperature,
+            request.use_search
+        )
+        
+        return StructuredResponse(
+            data=data,
+            model=request.model,
+            tool_calls=tool_calls if tool_calls else None
+        )
+    except Exception as e:
+        log.error("Error in structured output", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/generate", response_model=CodeResponse)

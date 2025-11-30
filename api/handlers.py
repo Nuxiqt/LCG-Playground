@@ -4,7 +4,7 @@ from langchain_ollama import OllamaLLM
 from langchain_openai import ChatOpenAI
 from langchain_core.tools import tool
 from langchain_core.messages import HumanMessage, ToolMessage
-from typing import Dict, Union
+from typing import Dict, Union, Any
 from logger import log
 import os
 
@@ -120,17 +120,22 @@ def generate_code(prompt: str, model: str, temperature: float, use_search: bool 
     llm = get_model(model, temperature)
     tool_calls = []
     
+    # Add current date context
+    from datetime import datetime
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    system_context = f"Current date: {current_date}\n\n"
+    
     # If search is enabled and it's an OpenAI model (supports tool calling)
     if use_search and model.startswith(('gpt-', 'o1-', 'o3-')) and _tavily_client:
         # Bind the search tool to the model
         llm_with_tools = llm.bind_tools([search_web])
         
         # First call - let AI decide if it needs to search
-        response = llm_with_tools.invoke([HumanMessage(content=prompt)])
+        response = llm_with_tools.invoke([HumanMessage(content=system_context + prompt)])
         
         # Check if AI wants to use tools
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            messages = [HumanMessage(content=prompt), response]
+            messages = [HumanMessage(content=system_context + prompt), response]
             
             # Execute each tool call
             for tool_call in response.tool_calls:
@@ -153,7 +158,7 @@ def generate_code(prompt: str, model: str, temperature: float, use_search: bool 
             response_text = response.content
     else:
         # No tool calling support or not enabled
-        response = llm.invoke(prompt)
+        response = llm.invoke(system_context + prompt)
         response_text = response.content if hasattr(response, 'content') else response
     
     log.info("Code generated", response_length=len(response_text), tools_used=len(tool_calls))
@@ -200,17 +205,22 @@ def chat(prompt: str, model: str, temperature: float, use_search: bool = False) 
     llm = get_model(model, temperature)
     tool_calls = []
     
+    # Add current date context
+    from datetime import datetime
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    system_context = f"Current date: {current_date}\n\n"
+    
     # If search is enabled and it's an OpenAI model (supports tool calling)
     if use_search and model.startswith(('gpt-', 'o1-', 'o3-')) and _tavily_client:
         # Bind the search tool to the model
         llm_with_tools = llm.bind_tools([search_web])
         
         # First call - let AI decide if it needs to search
-        response = llm_with_tools.invoke([HumanMessage(content=prompt)])
+        response = llm_with_tools.invoke([HumanMessage(content=system_context + prompt)])
         
         # Check if AI wants to use tools
         if hasattr(response, 'tool_calls') and response.tool_calls:
-            messages = [HumanMessage(content=prompt), response]
+            messages = [HumanMessage(content=system_context + prompt), response]
             
             # Execute each tool call
             for tool_call in response.tool_calls:
@@ -233,7 +243,7 @@ def chat(prompt: str, model: str, temperature: float, use_search: bool = False) 
             response_text = response.content
     else:
         # No tool calling support or not enabled
-        response = llm.invoke(prompt)
+        response = llm.invoke(system_context + prompt)
         response_text = response.content if hasattr(response, 'content') else response
     
     log.info("Chat response generated", response_length=len(response_text), tools_used=len(tool_calls))
@@ -292,6 +302,112 @@ def get_available_models() -> list:
         ])
     
     return models
+
+
+def structured_output(prompt: str, schema: dict, model: str, temperature: float, use_search: bool = False) -> tuple[dict, list]:
+    """
+    Get structured output based on a Pydantic schema.
+    
+    Args:
+        prompt: The user's request
+        schema: Pydantic schema as dictionary
+        model: Model name to use (must be OpenAI)
+        temperature: Generation temperature
+        use_search: Whether to enable web search tool
+    
+    Returns:
+        Tuple of (parsed structured data, list of tool calls made)
+    """
+    log.info("Structured output request", model=model, search_enabled=use_search)
+    
+    # Only OpenAI models support structured output
+    if not model.startswith(('gpt-', 'o1-', 'o3-')):
+        raise ValueError("Structured output only supported with OpenAI models")
+    
+    from pydantic import create_model
+    from datetime import datetime
+    
+    # Create Pydantic model from schema
+    model_name = schema.get('title', 'DynamicModel')
+    properties = schema.get('properties', {})
+    required = schema.get('required', [])
+    
+    # Build field definitions
+    fields = {}
+    for field_name, field_schema in properties.items():
+        field_type = Any
+        if field_schema.get('type') == 'string':
+            field_type = str
+        elif field_schema.get('type') == 'integer':
+            field_type = int
+        elif field_schema.get('type') == 'number':
+            field_type = float
+        elif field_schema.get('type') == 'boolean':
+            field_type = bool
+        elif field_schema.get('type') == 'array':
+            field_type = list
+        elif field_schema.get('type') == 'object':
+            field_type = dict
+        
+        # Make optional if not in required
+        if field_name in required:
+            fields[field_name] = (field_type, ...)
+        else:
+            fields[field_name] = (field_type, None)
+    
+    DynamicModel = create_model(model_name, **fields)
+    
+    # Get LLM and bind schema
+    llm = get_model(model, temperature)
+    structured_llm = llm.with_structured_output(DynamicModel)
+    
+    # Add current date context
+    current_date = datetime.now().strftime("%Y-%m-%d")
+    system_context = f"Current date: {current_date}\\n\\n"
+    
+    tool_calls = []
+    
+    # If search is enabled, bind tools
+    if use_search and _tavily_client:
+        # For structured output with tools, we need to handle it differently
+        llm_with_tools = llm.bind_tools([search_web])
+        
+        # First call - let AI decide if it needs to search
+        response = llm_with_tools.invoke([HumanMessage(content=system_context + prompt)])
+        
+        # Check if AI wants to use tools
+        if hasattr(response, 'tool_calls') and response.tool_calls:
+            messages = [HumanMessage(content=system_context + prompt), response]
+            
+            # Execute each tool call
+            for tool_call in response.tool_calls:
+                tool_calls.append({
+                    "tool": tool_call['name'],
+                    "args": tool_call['args']
+                })
+                
+                # Execute the tool
+                tool_output = search_web.invoke(tool_call['args'])
+                messages.append(ToolMessage(
+                    content=tool_output,
+                    tool_call_id=tool_call['id']
+                ))
+            
+            # Add instruction to use gathered info
+            messages.append(HumanMessage(content="Based on the search results above, " + prompt))
+            
+            # Get structured response
+            structured_response = structured_llm.invoke(messages)
+        else:
+            structured_response = structured_llm.invoke([HumanMessage(content=system_context + prompt)])
+    else:
+        structured_response = structured_llm.invoke(system_context + prompt)
+    
+    # Convert to dict
+    result = structured_response.model_dump() if hasattr(structured_response, 'model_dump') else structured_response.dict()
+    
+    log.info("Structured output completed", tools_used=len(tool_calls))
+    return result, tool_calls
 
 
 def health_check() -> dict:
