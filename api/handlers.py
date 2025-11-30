@@ -6,8 +6,59 @@ from typing import Dict, Union
 from logger import log
 import os
 
+try:
+    from tavily import TavilyClient
+    TAVILY_AVAILABLE = True
+except ImportError:
+    TAVILY_AVAILABLE = False
+    log.warning("Tavily not installed. Search functionality disabled.")
+
 # Model cache to avoid recreating instances
 _models: Dict[str, Union[OllamaLLM, ChatOpenAI]] = {}
+
+# Initialize Tavily client if available
+_tavily_client = None
+if TAVILY_AVAILABLE:
+    tavily_api_key = os.getenv('TAVILY_API_KEY')
+    if tavily_api_key:
+        _tavily_client = TavilyClient(api_key=tavily_api_key)
+        log.info("Tavily search enabled")
+    else:
+        log.warning("TAVILY_API_KEY not found. Search functionality disabled.")
+
+
+def search_web(query: str) -> str:
+    """Search the web using Tavily.
+    
+    Args:
+        query: Search query
+        
+    Returns:
+        Search results as formatted string
+    """
+    if not _tavily_client:
+        return "Search not available. Tavily API key not configured."
+    
+    try:
+        log.info("Searching web", query=query)
+        results = _tavily_client.search(query, max_results=5)
+        
+        if not results or 'results' not in results:
+            return "No results found."
+        
+        # Format results
+        formatted = []
+        for i, result in enumerate(results['results'], 1):
+            formatted.append(
+                f"{i}. {result.get('title', 'Untitled')}\n"
+                f"   URL: {result.get('url', 'N/A')}\n"
+                f"   {result.get('content', 'No content')}"
+            )
+        
+        return "\n\n".join(formatted)
+    except Exception as e:
+        log.error("Search error", error=str(e))
+        return f"Search error: {str(e)}"
 
 
 def get_model(model_name: str, temperature: float = 0.3) -> Union[OllamaLLM, ChatOpenAI]:
@@ -45,7 +96,7 @@ def get_model(model_name: str, temperature: float = 0.3) -> Union[OllamaLLM, Cha
     return _models[key]
 
 
-def generate_code(prompt: str, model: str, temperature: float) -> str:
+def generate_code(prompt: str, model: str, temperature: float, use_search: bool = False) -> str:
     """
     Generate code or explanations based on a prompt.
     
@@ -53,13 +104,28 @@ def generate_code(prompt: str, model: str, temperature: float) -> str:
         prompt: The user's request
         model: Model name to use
         temperature: Generation temperature
+        use_search: Whether to search the web for context
     
     Returns:
         Generated response
     """
-    log.info("Generating code", model=model, prompt_length=len(prompt))
+    log.info("Generating code", model=model, prompt_length=len(prompt), search_enabled=use_search)
+    
+    # Optionally search for context
+    context = ""
+    if use_search and _tavily_client:
+        search_results = search_web(prompt)
+        context = f"\n\nWeb search results:\n{search_results}\n\n"
+        log.info("Added search context", context_length=len(context))
+    
+    # Add context to prompt if available
+    full_prompt = f"{context}{prompt}" if context else prompt
+    
     llm = get_model(model, temperature)
-    response = llm.invoke(prompt)
+    response = llm.invoke(full_prompt)
+    # Extract content from AIMessage if it's an OpenAI model
+    if hasattr(response, 'content'):
+        response = response.content
     log.info("Code generated", response_length=len(response))
     return response
 
@@ -79,11 +145,14 @@ def complete_code(prompt: str, model: str, temperature: float) -> str:
     log.info("Completing code", model=model, prompt_length=len(prompt))
     llm = get_model(model, temperature)
     response = llm.invoke(prompt)
+    # Extract content from AIMessage if it's an OpenAI model
+    if hasattr(response, 'content'):
+        response = response.content
     log.info("Code completed", response_length=len(response))
     return response
 
 
-def chat(prompt: str, model: str, temperature: float) -> str:
+def chat(prompt: str, model: str, temperature: float, use_search: bool = False) -> str:
     """
     Handle chat-style coding questions and explanations.
     
@@ -91,13 +160,28 @@ def chat(prompt: str, model: str, temperature: float) -> str:
         prompt: User's question or request
         model: Model name to use
         temperature: Generation temperature
+        use_search: Whether to search the web for context
     
     Returns:
         Response to the question
     """
-    log.info("Processing chat request", model=model, prompt_length=len(prompt))
+    log.info("Processing chat request", model=model, prompt_length=len(prompt), search_enabled=use_search)
+    
+    # Optionally search for context
+    context = ""
+    if use_search and _tavily_client:
+        search_results = search_web(prompt)
+        context = f"\n\nWeb search results:\n{search_results}\n\n"
+        log.info("Added search context", context_length=len(context))
+    
+    # Add context to prompt if available
+    full_prompt = f"{context}{prompt}" if context else prompt
+    
     llm = get_model(model, temperature)
-    response = llm.invoke(prompt)
+    response = llm.invoke(full_prompt)
+    # Extract content from AIMessage if it's an OpenAI model
+    if hasattr(response, 'content'):
+        response = response.content
     log.info("Chat response generated", response_length=len(response))
     return response
 

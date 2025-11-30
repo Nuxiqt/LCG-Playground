@@ -21,6 +21,7 @@ class CodeRequest(BaseModel):
     model: Optional[str] = "qwen2.5-coder:14b-instruct"
     temperature: Optional[float] = 0.3
     max_tokens: Optional[int] = 2000
+    use_search: Optional[bool] = False
 
 
 class CodeResponse(BaseModel):
@@ -73,16 +74,20 @@ async def generate_code(request: CodeRequest):
     {
         "prompt": "Write a Python function to reverse a linked list",
         "model": "qwen2.5-coder:14b-instruct",
-        "temperature": 0.3
+        "temperature": 0.3,
+        "use_search": false
     }
     ```
+    
+    Set use_search=true to include web search results for context.
     """
     try:
-        log.info("POST /generate", model=request.model)
+        log.info("POST /generate", model=request.model, search=request.use_search)
         response = handlers.generate_code(
             request.prompt,
             request.model,
-            request.temperature
+            request.temperature,
+            request.use_search
         )
         
         return CodeResponse(
@@ -137,16 +142,20 @@ async def chat(request: CodeRequest):
     ```json
     {
         "prompt": "Explain the difference between deep copy and shallow copy in Python",
-        "model": "qwen2.5-coder:14b-instruct"
+        "model": "qwen2.5-coder:14b-instruct",
+        "use_search": false
     }
     ```
+    
+    Set use_search=true to include web search results for context.
     """
     try:
-        log.info("POST /chat", model=request.model)
+        log.info("POST /chat", model=request.model, search=request.use_search)
         response = handlers.chat(
             request.prompt,
             request.model,
-            request.temperature
+            request.temperature,
+            request.use_search
         )
         
         return CodeResponse(

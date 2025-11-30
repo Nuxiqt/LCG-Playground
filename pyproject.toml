@@ -15,5 +15,6 @@ dependencies = [
     "openai-agents>=0.1.0",
     "python-dotenv>=1.2.1",
     "structlog>=25.1.0",
+    "tavily-python>=0.3.0",
     "uvicorn>=0.32.0",
 ]
